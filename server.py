@@ -2,27 +2,31 @@ from flask import Flask, request, jsonify
 import sqlite3
 import datetime
 import hashlib
+import random, string
 
 app = Flask(__name__)
 DB = "licenses.db"
 
-# Create database
+# -------- CREATE DATABASE --------
 def init_db():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
+
     c.execute("""
     CREATE TABLE IF NOT EXISTS licenses (
         key TEXT PRIMARY KEY,
         expiry TEXT,
-        device TEXT
+        device TEXT,
+        reset_count INTEGER DEFAULT 0
     )
     """)
+
     conn.commit()
     conn.close()
 
 init_db()
 
-# Verify license
+# -------- VERIFY LICENSE --------
 @app.route("/verify", methods=["POST"])
 def verify():
     data = request.json
@@ -31,24 +35,25 @@ def verify():
 
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    c.execute("SELECT expiry, device FROM licenses WHERE key=?", (key,))
+
+    c.execute("SELECT expiry, device, reset_count FROM licenses WHERE key=?", (key,))
     row = c.fetchone()
 
     if not row:
-        return jsonify({"valid": False})
+        return jsonify({"valid": False, "msg": "Invalid key"})
 
-    expiry, saved_device = row
+    expiry, saved_device, reset_count = row
 
-    # Expiry check
+    # ✅ Expiry check
     if expiry != "lifetime":
         if datetime.date.today() > datetime.datetime.strptime(expiry, "%Y-%m-%d").date():
-            return jsonify({"valid": False})
+            return jsonify({"valid": False, "msg": "Expired"})
 
-    # Device check
+    # ✅ Device check
     if saved_device and saved_device != device:
-        return jsonify({"valid": False})
+        return jsonify({"valid": False, "msg": "Used on another device"})
 
-    # First time save device
+    # ✅ First time bind device
     if not saved_device:
         c.execute("UPDATE licenses SET device=? WHERE key=?", (device, key))
         conn.commit()
@@ -56,19 +61,60 @@ def verify():
     conn.close()
     return jsonify({"valid": True})
 
-# Generate key (manual use)
-@app.route("/generate", methods=["GET", "POST"])
+
+# -------- GENERATE LICENSE --------
+@app.route("/generate", methods=["GET"])
 def generate():
-    key = hashlib.md5(str(datetime.datetime.now()).encode()).hexdigest()[:12].upper()
-    expiry = str(datetime.date.today() + datetime.timedelta(days=365))
+    key = ''.join(random.choices(string.ascii_uppercase + string.digits, k=12))
+
+    # 🔹 CHANGE PLAN HERE
+    days = 30   # 30 = monthly
+    # days = 365  # yearly
+    # days = 0    # lifetime
+
+    if days == 0:
+        expiry = "lifetime"
+    else:
+        expiry = str(datetime.date.today() + datetime.timedelta(days=days))
 
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    c.execute("INSERT INTO licenses VALUES (?, ?, ?)", (key, expiry, ""))
+
+    c.execute("INSERT INTO licenses (key, expiry, device) VALUES (?, ?, ?)", (key, expiry, ""))
     conn.commit()
     conn.close()
 
-    return jsonify({"key": key})
+    return jsonify({"key": key, "expiry": expiry})
 
+
+# -------- RESET DEVICE --------
+@app.route("/reset", methods=["POST"])
+def reset_device():
+    data = request.json
+    key = data.get("key")
+
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+
+    c.execute("SELECT reset_count FROM licenses WHERE key=?", (key,))
+    row = c.fetchone()
+
+    if not row:
+        return jsonify({"status": "invalid key"})
+
+    reset_count = row[0]
+
+    if reset_count >= 2:
+        return jsonify({"status": "limit reached"})
+
+    # reset device
+    c.execute("UPDATE licenses SET device='', reset_count=? WHERE key=?", (reset_count+1, key))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"status": "reset successful"})
+
+
+# -------- RUN SERVER --------
 if __name__ == "__main__":
     app.run(port=5000)
