@@ -22,7 +22,7 @@ def init_db():
 """)
 
 # ✅ ADD THIS BELOW (DO NOT REMOVE ABOVE)
-c.execute("""
+    c.execute("""
     CREATE TABLE IF NOT EXISTS trials (
         device TEXT PRIMARY KEY,
         start_date TEXT
