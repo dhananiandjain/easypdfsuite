@@ -19,7 +19,15 @@ def init_db():
         device TEXT,
         reset_count INTEGER DEFAULT 0
     )
-    """)
+""")
+
+# ✅ ADD THIS BELOW (DO NOT REMOVE ABOVE)
+c.execute("""
+    CREATE TABLE IF NOT EXISTS trials (
+        device TEXT PRIMARY KEY,
+        start_date TEXT
+    )
+""")
 
     conn.commit()
     conn.close()
@@ -69,8 +77,6 @@ def generate():
 
     # 🔹 CHANGE PLAN HERE
     days = 30   # 30 = monthly
-    # days = 365  # yearly
-    # days = 0    # lifetime
 
     if days == 0:
         expiry = "lifetime"
@@ -85,6 +91,40 @@ def generate():
     conn.close()
 
     return jsonify({"key": key, "expiry": expiry})
+
+
+# ✅ -------- NEW TRIAL SYSTEM (ADD THIS) --------
+@app.route("/check-trial", methods=["POST"])
+def check_trial():
+    data = request.json
+    device = data.get("device")
+
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+
+    c.execute("SELECT start_date FROM trials WHERE device=?", (device,))
+    row = c.fetchone()
+
+    today = datetime.date.today()
+
+    # 🥇 First time → create trial
+    if not row:
+        c.execute("INSERT INTO trials VALUES (?, ?)", (device, str(today)))
+        conn.commit()
+        conn.close()
+        return jsonify({"trial": True, "days_left": 30})
+
+    # 🥈 Existing user
+    start_date = datetime.datetime.strptime(row[0], "%Y-%m-%d").date()
+    days_used = (today - start_date).days
+    days_left = 30 - days_used
+
+    conn.close()
+
+    if days_left > 0:
+        return jsonify({"trial": True, "days_left": days_left})
+    else:
+        return jsonify({"trial": False, "msg": "Trial expired"})
 
 
 # -------- RESET DEVICE --------
