@@ -1,4 +1,6 @@
 from flask import Flask, request, jsonify
+from flask import render_template_string
+from flask import make_response
 import sqlite3
 import datetime
 import hashlib
@@ -154,6 +156,206 @@ def reset_device():
 
     return jsonify({"status": "reset successful"})
 
+ADMIN_USER = "admin"
+ADMIN_PASS = "1234"
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        user = request.form.get("user")
+        pwd = request.form.get("pass")
+
+        if user == ADMIN_USER and pwd == ADMIN_PASS:
+            resp = make_response("<script>window.location='/admin'</script>")
+            resp.set_cookie("auth", "1")
+            return resp
+        else:
+            return "❌ Invalid Login"
+
+    return """
+    <h2>🔐 Admin Login</h2>
+    <form method="POST">
+        Username: <input name="user"><br><br>
+        Password: <input name="pass" type="password"><br><br>
+        <button type="submit">Login</button>
+    </form>
+    """
+
+# 🔐 LOGOUT ROUTE (ADD HERE 👇)
+@app.route("/logout")
+def logout():
+    resp = make_response("<script>window.location='/login'</script>")
+    resp.set_cookie("auth", "", expires=0)
+    return resp
+
+# -------- ADMIN PANEL --------
+@app.route("/admin")
+def admin():
+    if request.cookies.get("auth") != "1":
+        return "<script>window.location='/login'</script>"
+
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+
+    c.execute("SELECT COUNT(*) FROM licenses")
+    total_keys = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM licenses WHERE device != ''")
+    active_users = c.fetchone()[0]
+
+    c.execute("SELECT key, expiry, device, reset_count FROM licenses")
+    licenses = c.fetchall()
+
+    conn.close()
+
+    html = """
+    <html>
+    <head>
+    <title>Admin Dashboard</title>
+    <style>
+        body {background:#0f172a; color:white; font-family:Arial; margin:0;}
+        header {background:#020617; padding:15px; font-size:20px;}
+        .container {padding:20px;}
+        .cards {display:flex; gap:20px;}
+        .card {
+            background:#1e293b;
+            padding:20px;
+            border-radius:10px;
+            width:200px;
+            text-align:center;
+        }
+        table {
+            width:100%;
+            margin-top:20px;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding:10px;
+            border:1px solid #333;
+        }
+        th {background:#1e293b;}
+        tr:hover {background:#334155;}
+        input {
+            padding:8px;
+            width:200px;
+            margin-top:10px;
+        }
+        .btn {
+            padding:5px 10px;
+            border:none;
+            cursor:pointer;
+            border-radius:5px;
+        }
+        .delete {background:#ef4444;}
+        .reset {background:#f59e0b;}
+        .copy {background:#22c55e;}
+    </style>
+    </head>
+
+    <body>
+
+   <header>
+🚀 EASY PDF TOOL - ADMIN DASHBOARD
+<button onclick="window.location='/logout'" style="float:right; padding:5px 10px;">Logout</button>
+</header>
+
+    <div class="container">
+
+    <div class="cards">
+        <div class="card">
+            <h3>Total Keys</h3>
+            <h2>{{total_keys}}</h2>
+        </div>
+
+        <div class="card">
+            <h3>Active Users</h3>
+            <h2>{{active_users}}</h2>
+        </div>
+    </div>
+
+    <input type="text" id="search" placeholder="🔍 Search Key..." onkeyup="searchTable()">
+
+    <table id="table">
+        <tr>
+            <th>Key</th>
+            <th>Expiry</th>
+            <th>Device</th>
+            <th>Actions</th>
+        </tr>
+
+        {% for row in licenses %}
+        <tr>
+            <td>{{row[0]}}</td>
+            <td>{{row[1]}}</td>
+            <td>{{row[2]}}</td>
+            <td>
+                <button class="copy" onclick="copyText('{{row[0]}}')">Copy</button>
+                <button class="reset" onclick="window.location='/reset-device/{{row[0]}}'">Reset</button>
+                <button class="delete" onclick="del('{{row[0]}}')">Delete</button>
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+
+    </div>
+
+    <script>
+    function copyText(text){
+        navigator.clipboard.writeText(text);
+        alert("Copied: " + text);
+    }
+
+    function del(key){
+        if(confirm("Delete license?")){
+            window.location="/delete/"+key;
+        }
+    }
+
+    function searchTable(){
+        let input = document.getElementById("search").value.toLowerCase();
+        let rows = document.getElementById("table").rows;
+
+        for(let i=1;i<rows.length;i++){
+            let key = rows[i].cells[0].innerText.toLowerCase();
+            rows[i].style.display = key.includes(input) ? "" : "none";
+        }
+    }
+    </script>
+
+    </body>
+    </html>
+    """
+
+    return render_template_string(html, licenses=licenses,
+                                  total_keys=total_keys,
+                                  active_users=active_users)
+# 🧩 DELETE LICENSE (PASTE HERE 👇)
+@app.route("/delete/<key>")
+def delete_license(key):
+    if request.cookies.get("auth") != "1":
+        return "Unauthorized"
+
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("DELETE FROM licenses WHERE key=?", (key,))
+    conn.commit()
+    conn.close()
+
+    return "<script>window.location='/admin'</script>"
+
+# 🧩 RESET LICENSE (PASTE HERE 👇)
+@app.route("/reset-device/<key>")
+def reset_device_admin(key):
+    if request.cookies.get("auth") != "1":
+        return "Unauthorized"
+
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("UPDATE licenses SET device='', reset_count=0 WHERE key=?", (key,))
+    conn.commit()
+    conn.close()
+
+    return "<script>window.location='/admin'</script>"
 
 # -------- RUN SERVER --------
 if __name__ == "__main__":
