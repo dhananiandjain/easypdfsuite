@@ -7,6 +7,7 @@ import hashlib
 import random, string
 
 app = Flask(__name__)
+SECRET_API_KEY = "X9kL_78@pdfSecureKey_2026"
 DB = "licenses.db"
 
 # -------- CREATE DATABASE --------
@@ -26,9 +27,10 @@ def init_db():
 # ✅ ADD THIS BELOW (DO NOT REMOVE ABOVE)
     c.execute("""
     CREATE TABLE IF NOT EXISTS trials (
-        device TEXT PRIMARY KEY,
-        start_date TEXT
-    )
+    device TEXT PRIMARY KEY,
+    start_date TEXT,
+    ip TEXT
+)
 """)
 
     conn.commit()
@@ -42,6 +44,7 @@ def verify():
     data = request.json
     key = data.get("key")
     device = data.get("device")
+    ip = request.remote_addr
 
     conn = sqlite3.connect(DB)
     c = conn.cursor()
@@ -98,20 +101,35 @@ def generate():
 # ✅ -------- NEW TRIAL SYSTEM (ADD THIS) --------
 @app.route("/check-trial", methods=["POST"])
 def check_trial():
+    # 🔐 STEP 3.2: API SECURITY
+    key = request.headers.get("X-API-KEY")
+    if key != SECRET_API_KEY:
+        return jsonify({"trial": False, "days_left": 0})
+
     data = request.json
     device = data.get("device")
+    ip = request.remote_addr
 
     conn = sqlite3.connect(DB)
     c = conn.cursor()
 
+    # ✅ Check device
     c.execute("SELECT start_date FROM trials WHERE device=?", (device,))
     row = c.fetchone()
 
     today = datetime.date.today()
 
+    # 🚫 STEP 2: Block multiple trials from same IP
+    c.execute("SELECT * FROM trials WHERE ip=?", (ip,))
+    ip_exists = c.fetchone()
+
+    if not row and ip_exists:
+        conn.close()
+        return jsonify({"trial": False, "days_left": 0})
+
     # 🥇 First time → create trial
     if not row:
-        c.execute("INSERT INTO trials VALUES (?, ?)", (device, str(today)))
+        c.execute("INSERT INTO trials VALUES (?, ?, ?)", (device, str(today), ip))
         conn.commit()
         conn.close()
         return jsonify({"trial": True, "days_left": 30})
@@ -119,15 +137,14 @@ def check_trial():
     # 🥈 Existing user
     start_date = datetime.datetime.strptime(row[0], "%Y-%m-%d").date()
     days_used = (today - start_date).days
-    days_left = 30 - days_used
+    days_left = max(0, 30 - days_used)
 
     conn.close()
 
-    if days_left > 0:
-        return jsonify({"trial": True, "days_left": days_left})
-    else:
-        return jsonify({"trial": False, "msg": "Trial expired"})
-
+    return jsonify({
+        "trial": days_left > 0,
+        "days_left": days_left
+    })
 
 # -------- RESET DEVICE --------
 @app.route("/reset", methods=["POST"])
@@ -262,6 +279,8 @@ def admin():
     <div class="container">
 
     <div class="cards">
+<br>
+
         <div class="card">
             <h3>Total Keys</h3>
             <h2>{{total_keys}}</h2>
@@ -298,6 +317,13 @@ def admin():
     </table>
 
     </div>
+
+    <br>
+
+    <button onclick="window.location='/trial-users'" 
+    style="padding:10px 15px; margin:20px; background:#22c55e; border:none; border-radius:5px; cursor:pointer;">
+    📊 View Trial Users
+    </button>
 
     <script>
     function copyText(text){
@@ -356,6 +382,93 @@ def reset_device_admin(key):
     conn.close()
 
     return "<script>window.location='/admin'</script>"
+
+@app.route("/trial-users")
+def trial_users():
+    if request.cookies.get("auth") != "1":
+        return "<script>window.location='/login'</script>"
+
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+
+    c.execute("SELECT device, start_date, ip FROM trials")
+    rows = c.fetchall()
+
+    today = datetime.date.today()
+
+    data = []
+    for device, start_date, ip in rows:
+        start = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
+        days_used = (today - start).days
+        days_left = max(0, 30 - days_used)
+
+        data.append((device, ip, start_date, days_left))
+
+    conn.close()
+
+    html = """
+    <html>
+    <head>
+    <title>Trial Users</title>
+    <style>
+        body {background:#0f172a; color:white; font-family:Arial;}
+        table {width:100%; border-collapse: collapse; margin-top:20px;}
+        th, td {padding:10px; border:1px solid #333;}
+        th {background:#1e293b;}
+        tr:hover {background:#334155;}
+        button {padding:10px; margin:20px; background:#22c55e; border:none; border-radius:5px;}
+    </style>
+    </head>
+
+    <body>
+
+    <h2 style="padding:20px;">📊 Trial Users</h2>
+
+    <table>
+        <tr>
+            <th>Device</th>
+            <th>IP</th>
+            <th>Start Date</th>
+            <th>Days Left</th>
+            <th>Action</th>
+        </tr>
+
+        {% for row in data %}
+        <tr>
+    <td>{{row[0]}}</td>
+    <td>{{row[1]}}</td>
+    <td>{{row[2]}}</td>
+    <td>{{row[3]}}</td>
+    <td>
+        <button onclick="if(confirm('Delete user?')) window.location='/delete-trial/{{row[0]}}'" 
+        style="background:#ef4444; border:none; padding:5px; border-radius:5px;">
+        Delete
+        </button>
+    </td>
+</tr>
+        {% endfor %}
+    </table>
+
+    <button onclick="window.location='/admin'">⬅ Back</button>
+
+    </body>
+    </html>
+    """
+
+    return render_template_string(html, data=data)
+
+@app.route("/delete-trial/<device>")
+def delete_trial(device):
+    if request.cookies.get("auth") != "1":
+        return "Unauthorized"
+
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("DELETE FROM trials WHERE device=?", (device,))
+    conn.commit()
+    conn.close()
+
+    return "<script>window.location='/trial-users'</script>"
 
 # -------- RUN SERVER --------
 if __name__ == "__main__":
