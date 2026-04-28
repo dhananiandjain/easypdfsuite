@@ -71,7 +71,7 @@ def verify():
         today = str(datetime.date.today())
         c.execute(
             "UPDATE licenses SET device=? WHERE key=?",
-            (device, today, key)
+            (device, key)
     )
     conn.commit()
 
