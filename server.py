@@ -70,7 +70,7 @@ def verify():
     if not saved_device:
         today = str(datetime.date.today())
         c.execute(
-            "UPDATE licenses SET device=?, activated_on=? WHERE key=?",
+            "UPDATE licenses SET device=? WHERE key=?",
             (device, today, key)
     )
     conn.commit()
