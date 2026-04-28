@@ -480,7 +480,7 @@ def trial_users():
 
     <button onclick="window.location='/admin'">⬅ Back</button>
 
-    </body>c.execute("SELECT key, expiry, device, activated_on FROM licenses")
+    </body>
     </html>
     """
 
