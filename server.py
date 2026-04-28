@@ -228,7 +228,7 @@ def admin():
     c.execute("SELECT COUNT(*) FROM licenses WHERE device != ''")
     active_users = c.fetchone()[0]
 
-    c.execute("SELECT key, expiry, device, activated_on FROM licenses")
+    c.execute("SELECT key, expiry, device FROM licenses")
     licenses = c.fetchall()
 
     c.execute("SELECT COUNT(*) FROM licenses WHERE device != ''")
@@ -324,7 +324,6 @@ def admin():
             <th>Key</th>
             <th>Expiry</th>
             <th>Device</th>
-            <th>Activated On</th>
             <th>Actions</th>
         </tr>
 
@@ -333,7 +332,6 @@ def admin():
             <td>{{row[0]}}</td>
             <td>{{row[1]}}</td>
             <td>{{row[2]}}</td>
-            <td>{{row[3] or "—"}}</td>
             <td>
                 <button class="copy" onclick="copyText('{{row[0]}}')">Copy</button>
                 <button class="reset" onclick="window.location='/reset-device/{{row[0]}}'">Reset</button>
@@ -482,7 +480,7 @@ def trial_users():
 
     <button onclick="window.location='/admin'">⬅ Back</button>
 
-    </body>
+    </body>c.execute("SELECT key, expiry, device, activated_on FROM licenses")
     </html>
     """
 
