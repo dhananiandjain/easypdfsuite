@@ -68,8 +68,16 @@ def verify():
 
     # ✅ First time bind device
     if not saved_device:
-        c.execute("UPDATE licenses SET device=? WHERE key=?", (device, key))
-        conn.commit()
+        today = str(datetime.date.today())
+        c.execute(
+            "UPDATE licenses SET device=?, activated_on=? WHERE key=?",
+            (device, today, key)
+    )
+    conn.commit()
+
+    # 🔥 NEW: REMOVE FROM TRIAL TABLE
+    c.execute("DELETE FROM trials WHERE device=?", (device,))
+    conn.commit()
 
     conn.close()
     return jsonify({"valid": True})
@@ -220,8 +228,19 @@ def admin():
     c.execute("SELECT COUNT(*) FROM licenses WHERE device != ''")
     active_users = c.fetchone()[0]
 
-    c.execute("SELECT key, expiry, device, reset_count FROM licenses")
+    c.execute("SELECT key, expiry, device, activated_on FROM licenses")
     licenses = c.fetchall()
+
+    c.execute("SELECT COUNT(*) FROM licenses WHERE device != ''")
+    paid_users = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM trials")
+    trial_users = c.fetchone()[0]
+
+    # ✅ ADD THIS HERE
+    conversion = 0
+    if (paid_users + trial_users) > 0:
+        conversion = int((paid_users / (paid_users + trial_users)) * 100)
 
     conn.close()
 
@@ -290,6 +309,12 @@ def admin():
             <h3>Active Users</h3>
             <h2>{{active_users}}</h2>
         </div>
+
+        <div class="card">
+            <h3>Conversion</h3>
+            <h2>{{conversion}}%</h2>
+        </div>
+
     </div>
 
     <input type="text" id="search" placeholder="🔍 Search Key..." onkeyup="searchTable()">
@@ -299,6 +324,7 @@ def admin():
             <th>Key</th>
             <th>Expiry</th>
             <th>Device</th>
+            <th>Activated On</th>
             <th>Actions</th>
         </tr>
 
@@ -307,6 +333,7 @@ def admin():
             <td>{{row[0]}}</td>
             <td>{{row[1]}}</td>
             <td>{{row[2]}}</td>
+            <td>{{row[3] or "—"}}</td>
             <td>
                 <button class="copy" onclick="copyText('{{row[0]}}')">Copy</button>
                 <button class="reset" onclick="window.location='/reset-device/{{row[0]}}'">Reset</button>
@@ -352,9 +379,13 @@ def admin():
     </html>
     """
 
-    return render_template_string(html, licenses=licenses,
-                                  total_keys=total_keys,
-                                  active_users=active_users)
+    return render_template_string(
+    html,
+    licenses=licenses,
+    total_keys=total_keys,
+    active_users=active_users,
+    conversion=conversion
+)
 # 🧩 DELETE LICENSE (PASTE HERE 👇)
 @app.route("/delete/<key>")
 def delete_license(key):
