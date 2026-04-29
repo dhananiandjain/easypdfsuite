@@ -6,8 +6,14 @@ import datetime
 import hashlib
 import random, string
 
+def check_api():
+    key = request.headers.get("X-API-KEY")
+    if key != SECRET_API_KEY:
+        return False
+    return True
+
 app = Flask(__name__)
-SECRET_API_KEY = "X9kL_78@pdfSecureKey_2026"
+SECRET_API_KEY = "X9kL_78@pdfSecureKey_2026"	
 DB = "licenses.db"
 
 # -------- CREATE DATABASE --------
@@ -41,6 +47,9 @@ init_db()
 # -------- VERIFY LICENSE --------
 @app.route("/verify", methods=["POST"])
 def verify():
+    if not check_api():
+        return jsonify({"valid": False})
+
     data = request.json
     key = data.get("key")
     device = data.get("device")
@@ -84,12 +93,15 @@ def verify():
 
 
 # -------- GENERATE LICENSE --------
-@app.route("/generate", methods=["GET"])
+@app.route("/generate", methods=["POST"])
 def generate():
+    # 🔐 Only allow logged-in admin (cookie check)
+    if request.cookies.get("auth") != "1":
+        return jsonify({"error": "Unauthorized"}), 401
+
     key = ''.join(random.choices(string.ascii_uppercase + string.digits, k=12))
 
-    # 🔹 CHANGE PLAN HERE
-    days = 30   # 30 = monthly
+    days = 30
 
     if days == 0:
         expiry = "lifetime"
@@ -99,7 +111,11 @@ def generate():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
 
-    c.execute("INSERT INTO licenses (key, expiry, device) VALUES (?, ?, ?)", (key, expiry, ""))
+    c.execute(
+        "INSERT INTO licenses (key, expiry, device) VALUES (?, ?, ?)",
+        (key, expiry, "")
+    )
+
     conn.commit()
     conn.close()
 
@@ -157,6 +173,9 @@ def check_trial():
 # -------- RESET DEVICE --------
 @app.route("/reset", methods=["POST"])
 def reset_device():
+    if not check_api():
+        return jsonify({"status": "unauthorized"})
+
     data = request.json
     key = data.get("key")
 
@@ -182,7 +201,7 @@ def reset_device():
     return jsonify({"status": "reset successful"})
 
 ADMIN_USER = "admin"
-ADMIN_PASS = "1234"
+ADMIN_PASS = "Raku@21521$"
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
@@ -297,8 +316,17 @@ def admin():
 
     <div class="container">
 
+    <br><br>
+    <button onclick="generateKey()" 
+    style="padding:10px; background:#22c55e; border:none; border-radius:5px;">
+    ➕ Generate License
+    </button>
+
+    <h3 id="newKey"></h3>
+
     <div class="cards">
-<br>
+
+    <br>
 
         <div class="card">
             <h3>Total Keys</h3>
@@ -355,6 +383,21 @@ def admin():
         navigator.clipboard.writeText(text);
         alert("Copied: " + text);
     }
+
+    async function generateKey() {
+    const res = await fetch("/generate", {
+        method: "POST"
+    });
+
+    const data = await res.json();
+
+    if (data.key) {
+        document.getElementById("newKey").innerText =
+            "New Key: " + data.key + " (Expiry: " + data.expiry + ")";
+    } else {
+        alert("Unauthorized");
+    }
+}
 
     function del(key){
         if(confirm("Delete license?")){
