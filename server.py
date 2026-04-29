@@ -5,6 +5,9 @@ import sqlite3
 import datetime
 import hashlib
 import random, string
+import hmac, hashlib, json
+
+SIGN_SECRET = b"SUPER_SECRET_SERVER_KEY_2026"
 
 def check_api():
     key = request.headers.get("X-API-KEY")
@@ -43,6 +46,11 @@ def init_db():
     conn.close()
 
 init_db()
+
+def sign_data(data_dict):
+    data_str = json.dumps(data_dict, sort_keys=True)
+    signature = hmac.new(SIGN_SECRET, data_str.encode(), hashlib.sha256).hexdigest()
+    return signature
 
 # -------- VERIFY LICENSE --------
 @app.route("/verify", methods=["POST"])
@@ -89,6 +97,18 @@ def verify():
     conn.commit()
 
     conn.close()
+
+    # 🔐 SECURE RESPONSE HERE
+    response = {
+        "valid": True,
+        "expiry": expiry,
+        "device": device
+    }
+
+    signature = sign_data(response)
+    response["signature"] = signature
+
+    return jsonify(response)
     return jsonify({"valid": True})
 
 
