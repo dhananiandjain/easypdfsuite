@@ -6,6 +6,50 @@ import datetime
 import hashlib
 import random, string
 import hmac, hashlib, json
+import os
+
+
+import smtplib
+from email.mime.text import MIMEText
+
+def send_email(to_email, key):
+    sender = "easypdftool.ai@gmail.com"
+    import os
+    if not password:
+        print("Email password not set")
+        return
+
+    subject = "Your EASY PDF TOOL License Key"
+    body = f"""
+Thank you for purchasing EASY PDF TOOL 🎉
+
+Your License Key:
+{key}
+
+👉 Valid for 1 Year
+
+Instructions:
+Open the app → Click Activate → Enter this key
+
+Thank you for your support!
+"""
+
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = to_email
+
+    try:
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(sender, password)
+        server.send_message(msg)
+        server.quit()
+        print("Email sent successfully")
+    except Exception as e:
+        print("Email error:", e)
+
+
 
 SIGN_SECRET = b"SUPER_SECRET_SERVER_KEY_2026"
 
@@ -52,11 +96,18 @@ def sign_data(data_dict):
     signature = hmac.new(SIGN_SECRET, data_str.encode(), hashlib.sha256).hexdigest()
     return signature
 
+
+def signed_response(data):
+    data["signature"] = sign_data(data.copy())
+    return jsonify(data)
+
 # -------- VERIFY LICENSE --------
 @app.route("/verify", methods=["POST"])
 def verify():
     if not check_api():
-        return jsonify({"valid": False})
+        response = {"valid": False}
+        response["signature"] = sign_data(response)
+        return jsonify(response)
 
     data = request.json
     key = data.get("key")
@@ -70,18 +121,18 @@ def verify():
     row = c.fetchone()
 
     if not row:
-        return jsonify({"valid": False, "msg": "Invalid key"})
+        return signed_response({"valid": False, "msg": "Invalid key"})
 
     expiry, saved_device, reset_count = row
 
     # ✅ Expiry check
     if expiry != "lifetime":
         if datetime.date.today() > datetime.datetime.strptime(expiry, "%Y-%m-%d").date():
-            return jsonify({"valid": False, "msg": "Expired"})
+            return signed_response({"valid": False, "msg": "Expired"})
 
     # ✅ Device check
     if saved_device and saved_device != device:
-        return jsonify({"valid": False, "msg": "Used on another device"})
+        return signed_response({"valid": False, "msg": "Used on another device"})
 
     # ✅ First time bind device
     if not saved_device:
@@ -99,29 +150,26 @@ def verify():
     conn.close()
 
     # 🔐 SECURE RESPONSE HERE
-    response = {
+    return signed_response({
         "valid": True,
         "expiry": expiry,
         "device": device
-    }
-
-    signature = sign_data(response)
-    response["signature"] = signature
-
-    return jsonify(response)
-    return jsonify({"valid": True})
-
-
+    })
+    
 # -------- GENERATE LICENSE --------
 @app.route("/generate", methods=["POST"])
 def generate():
-    # 🔐 Only allow logged-in admin (cookie check)
+    # 🔐 Admin login check
     if request.cookies.get("auth") != "1":
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # 🔐 API key check (VERY IMPORTANT)
+    if request.headers.get("X-API-KEY") != SECRET_API_KEY:
         return jsonify({"error": "Unauthorized"}), 401
 
     key = ''.join(random.choices(string.ascii_uppercase + string.digits, k=12))
 
-    days = 30
+    days = 365
 
     if days == 0:
         expiry = "lifetime"
@@ -406,8 +454,11 @@ def admin():
 
     async function generateKey() {
     const res = await fetch("/generate", {
-        method: "POST"
-    });
+    method: "POST",
+    headers: {
+        "X-API-KEY": "X9kL_78@pdfSecureKey_2026"
+    }
+});
 
     const data = await res.json();
 
@@ -561,6 +612,61 @@ def delete_trial(device):
     conn.close()
 
     return "<script>window.location='/trial-users'</script>"
+
+@app.route("/webhook", methods=["POST"])
+def razorpay_webhook():
+    import hmac, hashlib
+
+    webhook_secret = os.environ.get("RAZORPAY_WEBHOOK_SECRET")
+
+    body = request.data
+    received_signature = request.headers.get("X-Razorpay-Signature")
+
+    # 🔐 Verify webhook signature
+    generated_signature = hmac.new(
+        webhook_secret.encode(),
+        body,
+        hashlib.sha256
+    ).hexdigest()
+
+    if generated_signature != received_signature:
+        return "Invalid signature", 400
+
+    data = request.json
+
+    # ✅ Only process successful payments
+    if data.get("event") == "payment.captured":
+        payment = data["payload"]["payment"]["entity"]
+
+        email = payment.get("email")
+        phone = payment.get("contact")
+
+        # 🔥 Generate license
+        key = ''.join(random.choices(string.ascii_uppercase + string.digits, k=12))
+        expiry = str(datetime.date.today() + datetime.timedelta(days=365))
+
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+
+        c.execute(
+            "INSERT INTO licenses (key, expiry, device) VALUES (?, ?, ?)",
+            (key, expiry, "")
+        )
+
+        conn.commit()
+        conn.close()
+
+        # 🔥 SEND LICENSE (OPTION 1: print/log)
+        if email:
+            send_email(email, key)
+        else:
+            print("No email provided, license:", key)
+
+        print(f"License sent to {email or phone}: {key}")
+
+        # 👉 You can later send via email / WhatsApp
+
+    return "OK", 200
 
 # -------- RUN SERVER --------
 if __name__ == "__main__":
