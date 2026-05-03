@@ -14,7 +14,9 @@ from email.mime.text import MIMEText
 
 def send_email(to_email, key):
     sender = "easypdftool.ai@gmail.com"
-    import os
+
+    password = os.environ.get("EMAIL_PASS")   # 🔥 ADD THIS
+
     if not password:
         print("Email password not set")
         return
@@ -27,11 +29,6 @@ Your License Key:
 {key}
 
 👉 Valid for 1 Year
-
-Instructions:
-Open the app → Click Activate → Enter this key
-
-Thank you for your support!
 """
 
     msg = MIMEText(body)
@@ -615,6 +612,7 @@ def delete_trial(device):
 
 @app.route("/webhook", methods=["POST"])
 def razorpay_webhook():
+    print("Webhook triggered")
     import hmac, hashlib
 
     webhook_secret = os.environ.get("RAZORPAY_WEBHOOK_SECRET")
