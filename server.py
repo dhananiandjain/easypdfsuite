@@ -8,7 +8,6 @@ import random, string
 import hmac, hashlib, json
 import os
 
-
 import smtplib
 from email.mime.text import MIMEText
 
@@ -106,7 +105,13 @@ def check_api():
 
 app = Flask(__name__)
 SECRET_API_KEY = "X9kL_78@pdfSecureKey_2026"	
-DB = "licenses.db"
+DB = "/data/licenses.db"
+
+# Ensure folder exists
+os.makedirs("/data", exist_ok=True)
+
+print("Database path:", DB)
+print("Files in /data:", os.listdir("/data") if os.path.exists("/data") else "No /data")
 
 # -------- CREATE DATABASE --------
 def init_db():
