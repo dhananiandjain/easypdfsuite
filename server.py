@@ -660,7 +660,9 @@ def delete_trial(device):
 
 @app.route("/webhook", methods=["POST"])
 def razorpay_webhook():
-    print("Webhook triggered")
+    print("🔥 Webhook triggered")
+    print("Headers:", dict(request.headers))
+    print("Body:", request.data)
     import hmac, hashlib
 
     webhook_secret = os.environ.get("RAZORPAY_WEBHOOK_SECRET")
