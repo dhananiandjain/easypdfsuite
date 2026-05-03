@@ -22,16 +22,64 @@ def send_email(to_email, key):
         return
 
     subject = "Your EASY PDF TOOL License Key"
-    body = f"""
-Thank you for purchasing EASY PDF TOOL 🎉
+    html_body = f"""
+<html>
+<body style="font-family: Arial, sans-serif; background:#f4f6f8; padding:20px;">
 
-Your License Key:
-{key}
+<div style="max-width:600px; margin:auto; background:white; border-radius:10px; overflow:hidden; box-shadow:0 2px 10px rgba(0,0,0,0.1);">
 
-👉 Valid for 1 Year
+    <div style="background:#1f6aa5; color:white; padding:20px; text-align:center;">
+        <h2 style="margin:0;">EASY PDF TOOL</h2>
+        <p style="margin:0;">License Activation</p>
+    </div>
+
+    <div style="padding:20px; color:#333;">
+        <h3>🎉 Thank you for your purchase!</h3>
+
+        <p>Your license key is ready:</p>
+
+        <div style="background:#f1f5f9; padding:15px; text-align:center; font-size:18px; font-weight:bold; border-radius:8px;">
+            {key}
+        </div>
+
+        <p style="margin-top:15px;">
+            ✔ Valid for 1 Year<br>
+            ✔ One device activation
+        </p>
+
+        <h4>How to activate:</h4>
+        <ol>
+            <li>Open EASY PDF TOOL</li>
+            <li>Click <b>Activate License</b></li>
+            <li>Paste your key</li>
+        </ol>
+
+        <p>If you face any issue, contact support:</p>
+
+        <div style="text-align:center; margin-top:10px;">
+            <a href="https://wa.me/919687167883"
+               style="
+               background:#25D366;
+               color:white;
+               padding:12px 20px;
+               text-decoration:none;
+               border-radius:6px;
+               font-weight:bold;
+               display:inline-block;">
+               💬 Contact Support on WhatsApp
+           </a>
+       </div>
+
+        <p style="margin-top:20px;">Thank you,<br><b>EASY PDF TOOL Team</b></p>
+    </div>
+
+</div>
+
+</body>
+</html>
 """
 
-    msg = MIMEText(body)
+    msg = MIMEText(html_body, "html")
     msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = to_email
@@ -616,6 +664,10 @@ def razorpay_webhook():
     import hmac, hashlib
 
     webhook_secret = os.environ.get("RAZORPAY_WEBHOOK_SECRET")
+
+    if not webhook_secret:
+        print("Webhook secret not set")
+        return "Error", 500
 
     body = request.data
     received_signature = request.headers.get("X-Razorpay-Signature")
