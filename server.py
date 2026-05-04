@@ -5,13 +5,25 @@ import sqlite3
 import datetime
 import hashlib
 import random, string
-import hmac, hashlib, json
+import hmac, json
 import os
-
-
+login_attempts = {}
+BLOCK_TIME = 600  # 10 minutes
+MAX_ATTEMPTS = 5
+import jwt
 
 import smtplib
 from email.mime.text import MIMEText
+
+
+JWT_SECRET = os.environ.get("JWT_SECRET")
+
+if not JWT_SECRET:
+    raise Exception("JWT_SECRET not set")
+
+JWT_EXPIRY = 300  # 5 minutes
+
+
 
 def send_email(to_email, key):
     sender = "easypdftool.ai@gmail.com"
@@ -125,9 +137,22 @@ def init_db():
         key TEXT PRIMARY KEY,
         expiry TEXT,
         device TEXT,
+        email TEXT,
+        pc_name TEXT,
         reset_count INTEGER DEFAULT 0
     )
-""")
+    """)
+
+    # ✅ SAFE MIGRATION (INSIDE FUNCTION)
+    try:
+        c.execute("ALTER TABLE licenses ADD COLUMN email TEXT")
+    except:
+        pass
+
+    try:
+        c.execute("ALTER TABLE licenses ADD COLUMN pc_name TEXT")
+    except:
+        pass
 
 # ✅ ADD THIS BELOW (DO NOT REMOVE ABOVE)
     c.execute("""
@@ -164,6 +189,8 @@ def verify():
     data = request.json
     key = data.get("key")
     device = data.get("device")
+    email = data.get("email")
+    pc_name = data.get("pc_name")
     ip = request.remote_addr
 
     conn = sqlite3.connect(DB)
@@ -188,12 +215,17 @@ def verify():
 
     # ✅ First time bind device
     if not saved_device:
-        today = str(datetime.date.today())
-        c.execute(
-            "UPDATE licenses SET device=? WHERE key=?",
-            (device, key)
-    )
-    conn.commit()
+        if email:
+            c.execute(
+                "UPDATE licenses SET device=?, email=?, pc_name=? WHERE key=?",
+                (device, email, pc_name, key)
+            )
+        else:
+            c.execute(
+                "UPDATE licenses SET device=?, pc_name=? WHERE key=?",
+                (device, pc_name, key)
+            )
+        conn.commit()
 
     # 🔥 NEW: REMOVE FROM TRIAL TABLE
     c.execute("DELETE FROM trials WHERE device=?", (device,))
@@ -212,8 +244,10 @@ def verify():
 @app.route("/generate", methods=["POST"])
 def generate():
     # 🔐 Admin login check
-    if request.cookies.get("auth") != "1":
+    if not verify_token(request):
         return jsonify({"error": "Unauthorized"}), 401
+        
+        
 
     # 🔐 API key check (VERY IMPORTANT)
     if request.headers.get("X-API-KEY") != SECRET_API_KEY:
@@ -232,14 +266,25 @@ def generate():
     c = conn.cursor()
 
     c.execute(
-        "INSERT INTO licenses (key, expiry, device) VALUES (?, ?, ?)",
-        (key, expiry, "")
+        "INSERT INTO licenses (key, expiry, device, email, pc_name) VALUES (?, ?, ?, ?, ?)",
+        (key, expiry, "", "", "")
     )
 
     conn.commit()
     conn.close()
 
     return jsonify({"key": key, "expiry": expiry})
+
+
+# -------CREATE TOKEN -------
+
+def create_token(username, ip):
+    payload = {
+        "user": username,
+        "ip": ip,
+        "exp": datetime.datetime.utcnow() + datetime.timedelta(seconds=JWT_EXPIRY)
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
 
 # ✅ -------- NEW TRIAL SYSTEM (ADD THIS) --------
@@ -321,19 +366,54 @@ def reset_device():
     return jsonify({"status": "reset successful"})
 
 ADMIN_USER = "admin"
-ADMIN_PASS = "Raku@21521$"
+import bcrypt
+
+ADMIN_PASS_HASH = b"$2b$12$kauhyIBW4ODkUtWMcLixHO1DPhs.I6Jp1XOuQJS3/Z4R.EUu4BQBu"
+
+# check
+
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    ip = request.remote_addr
+    now = datetime.datetime.now()
+
+    # 🔒 Check if blocked
+    if ip in login_attempts:
+        attempts, last_attempt = login_attempts[ip]
+
+        if attempts >= MAX_ATTEMPTS:
+            diff = (now - last_attempt).seconds
+            if diff < BLOCK_TIME:
+                return f"🚫 Too many attempts. Try again in {BLOCK_TIME - diff} seconds"
+
     if request.method == "POST":
         user = request.form.get("user")
         pwd = request.form.get("pass")
 
-        if user == ADMIN_USER and pwd == ADMIN_PASS:
+        if user == ADMIN_USER and bcrypt.checkpw(pwd.encode(), ADMIN_PASS_HASH):
+            login_attempts.pop(ip, None)  # reset on success
+
+            token = create_token(user, ip)   # 🔥 NEW
+
             resp = make_response("<script>window.location='/admin'</script>")
-            resp.set_cookie("auth", "1")
+            resp.set_cookie(
+                "token",
+                token,
+                max_age=300,
+                httponly=True,
+                secure=True,
+                samesite="Strict",
+                path="/"
+            )
             return resp
         else:
+            # ❌ wrong login
+            if ip in login_attempts:
+                login_attempts[ip] = (login_attempts[ip][0] + 1, now)
+            else:
+                login_attempts[ip] = (1, now)
+
             return "❌ Invalid Login"
 
     return """
@@ -349,15 +429,40 @@ def login():
 @app.route("/logout")
 def logout():
     resp = make_response("<script>window.location='/login'</script>")
-    resp.set_cookie("auth", "", expires=0)
+    resp.set_cookie(
+        "token",
+        "",
+        expires=0,
+        httponly=True,
+        secure=True,
+        samesite="Strict",
+        path="/"
+    )
     return resp
+
+
+# ------- VERIFY TOKEN -------
+def verify_token(request):
+    token = request.cookies.get("token")
+    if not token:
+        return False
+
+    try:
+        data = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+
+        if data["ip"] != request.remote_addr:
+            return False
+
+        return True
+    except:
+        return False
 
 # -------- ADMIN PANEL --------
 @app.route("/admin")
 def admin():
-    if request.cookies.get("auth") != "1":
+    if not verify_token(request):
         return "<script>window.location='/login'</script>"
-
+        
     conn = sqlite3.connect(DB)
     c = conn.cursor()
 
@@ -367,7 +472,7 @@ def admin():
     c.execute("SELECT COUNT(*) FROM licenses WHERE device != ''")
     active_users = c.fetchone()[0]
 
-    c.execute("SELECT key, expiry, device FROM licenses")
+    c.execute("SELECT key, expiry, device, email, pc_name FROM licenses")
     licenses = c.fetchall()
 
     c.execute("SELECT COUNT(*) FROM licenses WHERE device != ''")
@@ -472,6 +577,8 @@ def admin():
             <th>Key</th>
             <th>Expiry</th>
             <th>Device</th>
+            <th>Email</th>
+            <th>PC Name</th>
             <th>Actions</th>
         </tr>
 
@@ -480,6 +587,8 @@ def admin():
             <td>{{row[0]}}</td>
             <td>{{row[1]}}</td>
             <td>{{row[2]}}</td>
+            <td>{{row[3]}}</td>
+            <td>{{row[4]}}</td>
             <td>
                 <button class="copy" onclick="copyText('{{row[0]}}')">Copy</button>
                 <button class="reset" onclick="window.location='/reset-device/{{row[0]}}'">Reset</button>
@@ -537,6 +646,28 @@ def admin():
             rows[i].style.display = key.includes(input) ? "" : "none";
         }
     }
+
+let logoutTimer;
+
+function resetTimer() {
+    clearTimeout(logoutTimer);
+
+    logoutTimer = setTimeout(() => {
+        alert("Session expired due to inactivity");
+        window.location = "/logout";
+    }, 5 * 60 * 1000); // 5 minutes
+}
+
+// Reset timer on user activity
+window.onload = resetTimer;
+document.onmousemove = resetTimer;
+document.onkeypress = resetTimer;
+document.onclick = resetTimer;
+document.onscroll = resetTimer;
+</script>
+
+
+
     </script>
 
     </body>
@@ -553,7 +684,7 @@ def admin():
 # 🧩 DELETE LICENSE (PASTE HERE 👇)
 @app.route("/delete/<key>")
 def delete_license(key):
-    if request.cookies.get("auth") != "1":
+    if not verify_token(request):
         return "Unauthorized"
 
     conn = sqlite3.connect(DB)
@@ -567,7 +698,7 @@ def delete_license(key):
 # 🧩 RESET LICENSE (PASTE HERE 👇)
 @app.route("/reset-device/<key>")
 def reset_device_admin(key):
-    if request.cookies.get("auth") != "1":
+    if not verify_token(request):
         return "Unauthorized"
 
     conn = sqlite3.connect(DB)
@@ -580,7 +711,7 @@ def reset_device_admin(key):
 
 @app.route("/trial-users")
 def trial_users():
-    if request.cookies.get("auth") != "1":
+    if not verify_token(request):
         return "<script>window.location='/login'</script>"
 
     conn = sqlite3.connect(DB)
@@ -654,7 +785,7 @@ def trial_users():
 
 @app.route("/delete-trial/<device>")
 def delete_trial(device):
-    if request.cookies.get("auth") != "1":
+    if not verify_token(request):
         return "Unauthorized"
 
     conn = sqlite3.connect(DB)
@@ -697,7 +828,7 @@ def razorpay_webhook():
     if data.get("event") == "payment.captured":
         payment = data["payload"]["payment"]["entity"]
 
-        email = payment.get("email")
+        email = payment.get("email") or ""
         phone = payment.get("contact")
 
         # 🔥 Generate license
@@ -708,8 +839,8 @@ def razorpay_webhook():
         c = conn.cursor()
 
         c.execute(
-            "INSERT INTO licenses (key, expiry, device) VALUES (?, ?, ?)",
-            (key, expiry, "")
+            "INSERT INTO licenses (key, expiry, device, email, pc_name) VALUES (?, ?, ?, ?, ?)",
+            (key, expiry, "", email, "")
         )
 
         conn.commit()
