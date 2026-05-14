@@ -2,3 +2,4 @@ flask
 gunicorn
 bcrypt
 PyJWT
+flask-limiter
