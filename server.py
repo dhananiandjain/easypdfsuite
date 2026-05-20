@@ -10,6 +10,7 @@ import hashlib
 import random, string
 import hmac, json
 import os
+import io
 login_attempts = {}
 BLOCK_TIME = 600  # 10 minutes
 MAX_ATTEMPTS = 5
@@ -880,7 +881,6 @@ def delete_trial(device):
 # EXPORT LICENSE
 @app.route("/export-licenses")
 def export_licenses():
-
     if not verify_token(request):
         return "Unauthorized"
 
@@ -890,20 +890,13 @@ def export_licenses():
     c.execute(
         "SELECT key, expiry, device, email, pc_name FROM licenses"
     )
-
     rows = c.fetchall()
-
     conn.close()
 
-    response = make_response()
-
-    response.headers["Content-Disposition"] = \
-        "attachment; filename=licenses.csv"
-
-    response.headers["Content-type"] = "text/csv"
-
-    writer = csv.writer(response)
-
+    # 🔥 FIX: Use StringIO to safely build the CSV text
+    si = io.StringIO()
+    writer = csv.writer(si)
+    
     writer.writerow([
         "Key",
         "Expiry",
@@ -911,15 +904,18 @@ def export_licenses():
         "Email",
         "PC Name"
     ])
-
     writer.writerows(rows)
+
+    # Output the CSV data from the buffer to the response
+    response = make_response(si.getvalue())
+    response.headers["Content-Disposition"] = "attachment; filename=licenses.csv"
+    response.headers["Content-type"] = "text/csv"
 
     return response
 
 # EXPORT TRIAL
 @app.route("/export-trials")
 def export_trials():
-
     if not verify_token(request):
         return "Unauthorized"
 
@@ -929,19 +925,12 @@ def export_trials():
     c.execute(
         "SELECT device, start_date, ip, pc_name FROM trials"
     )
-
     rows = c.fetchall()
-
     conn.close()
 
-    response = make_response()
-
-    response.headers["Content-Disposition"] = \
-        "attachment; filename=trials.csv"
-
-    response.headers["Content-type"] = "text/csv"
-
-    writer = csv.writer(response)
+    # 🔥 FIX: Use StringIO to safely build the CSV text
+    si = io.StringIO()
+    writer = csv.writer(si)
 
     writer.writerow([
         "Device",
@@ -949,8 +938,12 @@ def export_trials():
         "IP",
         "PC Name"
     ])
-
     writer.writerows(rows)
+
+    # Output the CSV data from the buffer to the response
+    response = make_response(si.getvalue())
+    response.headers["Content-Disposition"] = "attachment; filename=trials.csv"
+    response.headers["Content-type"] = "text/csv"
 
     return response
 
