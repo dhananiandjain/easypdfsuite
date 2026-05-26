@@ -1,12 +1,16 @@
 from flask import Flask, request, jsonify
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from flask import render_template_string
 from flask import make_response
 import sqlite3
+import csv
 import datetime
 import hashlib
 import random, string
 import hmac, json
 import os
+import io
 login_attempts = {}
 BLOCK_TIME = 600  # 10 minutes
 MAX_ATTEMPTS = 5
@@ -109,16 +113,23 @@ def send_email(to_email, key):
 
 
 
-SIGN_SECRET = b"SUPER_SECRET_SERVER_KEY_2026"
+SIGN_SECRET = os.environ.get("SIGN_SECRET")
 
-def check_api():
-    key = request.headers.get("X-API-KEY")
-    if key != SECRET_API_KEY:
-        return False
-    return True
+if not SIGN_SECRET:
+    raise Exception("SIGN_SECRET not set")
+
+SIGN_SECRET = SIGN_SECRET.encode()
+
 
 app = Flask(__name__)
-SECRET_API_KEY = "X9kL_78@pdfSecureKey_2026"	
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    default_limits=["20 per minute"]
+)
+
+SECRET_API_KEY = os.environ.get("SECRET_API_KEY")	
 DB = "/data/licenses.db"
 
 # Ensure folder exists
@@ -157,11 +168,17 @@ def init_db():
 # ✅ ADD THIS BELOW (DO NOT REMOVE ABOVE)
     c.execute("""
     CREATE TABLE IF NOT EXISTS trials (
-    device TEXT PRIMARY KEY,
-    start_date TEXT,
-    ip TEXT
-)
-""")
+        device TEXT PRIMARY KEY,
+        start_date TEXT,
+        ip TEXT,
+        pc_name TEXT
+    )
+    """)
+
+    try:
+        c.execute("ALTER TABLE trials ADD COLUMN pc_name TEXT")
+    except:
+        pass
 
     conn.commit()
     conn.close()
@@ -179,13 +196,10 @@ def signed_response(data):
     return jsonify(data)
 
 # -------- VERIFY LICENSE --------
+@limiter.limit("10 per minute")
 @app.route("/verify", methods=["POST"])
 def verify():
-    if not check_api():
-        response = {"valid": False}
-        response["signature"] = sign_data(response)
-        return jsonify(response)
-
+    
     data = request.json
     key = data.get("key")
     device = data.get("device")
@@ -241,18 +255,14 @@ def verify():
     })
     
 # -------- GENERATE LICENSE --------
+@limiter.limit("3 per minute")
 @app.route("/generate", methods=["POST"])
 def generate():
     # 🔐 Admin login check
     if not verify_token(request):
         return jsonify({"error": "Unauthorized"}), 401
-        
-        
-
-    # 🔐 API key check (VERY IMPORTANT)
-    if request.headers.get("X-API-KEY") != SECRET_API_KEY:
-        return jsonify({"error": "Unauthorized"}), 401
-
+       
+    
     key = ''.join(random.choices(string.ascii_uppercase + string.digits, k=12))
 
     days = 365
@@ -288,16 +298,14 @@ def create_token(username, ip):
 
 
 # ✅ -------- NEW TRIAL SYSTEM (ADD THIS) --------
+@limiter.limit("5 per minute")
 @app.route("/check-trial", methods=["POST"])
 def check_trial():
-    # 🔐 STEP 3.2: API SECURITY
-    key = request.headers.get("X-API-KEY")
-    if key != SECRET_API_KEY:
-        return jsonify({"trial": False, "days_left": 0})
-
+    
     data = request.json
     device = data.get("device")
     ip = request.remote_addr
+    pc_name = data.get("pc_name")
 
     conn = sqlite3.connect(DB)
     c = conn.cursor()
@@ -318,7 +326,10 @@ def check_trial():
 
     # 🥇 First time → create trial
     if not row:
-        c.execute("INSERT INTO trials VALUES (?, ?, ?)", (device, str(today), ip))
+        c.execute(
+            "INSERT INTO trials VALUES (?, ?, ?, ?)",
+            (device, str(today), ip, pc_name)
+        )
         conn.commit()
         conn.close()
         return jsonify({"trial": True, "days_left": 30})
@@ -336,11 +347,10 @@ def check_trial():
     })
 
 # -------- RESET DEVICE --------
+@limiter.limit("3 per minute")
 @app.route("/reset", methods=["POST"])
 def reset_device():
-    if not check_api():
-        return jsonify({"status": "unauthorized"})
-
+    
     data = request.json
     key = data.get("key")
 
@@ -373,6 +383,7 @@ ADMIN_PASS_HASH = b"$2b$12$kauhyIBW4ODkUtWMcLixHO1DPhs.I6Jp1XOuQJS3/Z4R.EUu4BQBu
 # check
 
 
+@limiter.limit("5 per minute")
 @app.route("/login", methods=["GET", "POST"])
 def login():
     ip = request.remote_addr
@@ -547,6 +558,30 @@ def admin():
     ➕ Generate License
     </button>
 
+    <button onclick="window.location='/export-licenses'"
+    style="
+    padding:10px;
+    background:#3b82f6;
+    border:none;
+    border-radius:5px;
+    margin-left:10px;
+    cursor:pointer;
+    ">
+    📥 Export Licenses
+    </button>
+
+    <button onclick="window.location='/export-trials'"
+    style="
+    padding:10px;
+    background:#8b5cf6;
+    border:none;
+    border-radius:5px;
+    margin-left:10px;
+    cursor:pointer;
+    ">
+    📥 Export Trials
+    </button>
+
     <h3 id="newKey"></h3>
 
     <div class="cards">
@@ -588,10 +623,10 @@ def admin():
             <td>{{row[1]}}</td>
             <td>{{row[2]}}</td>
             <td>{{row[3]}}</td>
-            <td>{{row[4]}}</td>
+            <td>{{row[4]}}</td>            
             <td>
                 <button class="copy" onclick="copyText('{{row[0]}}')">Copy</button>
-                <button class="reset" onclick="window.location='/reset-device/{{row[0]}}'">Reset</button>
+                <button class="reset" onclick="resetDevice('{{row[0]}}')">Reset</button>
                 <button class="delete" onclick="del('{{row[0]}}')">Delete</button>
             </td>
         </tr>
@@ -615,10 +650,7 @@ def admin():
 
     async function generateKey() {
     const res = await fetch("/generate", {
-    method: "POST",
-    headers: {
-        "X-API-KEY": "X9kL_78@pdfSecureKey_2026"
-    }
+    method: "POST",   
 });
 
     const data = await res.json();
@@ -631,11 +663,37 @@ def admin():
     }
 }
 
-    function del(key){
+    async function del(key){
+
         if(confirm("Delete license?")){
-            window.location="/delete/"+key;
+
+            const res = await fetch(
+                "/delete/" + key,
+                {
+                    method: "POST"
+                }
+            );
+
+            window.location.reload();
         }
     }
+
+    async function resetDevice(key){
+
+        if(confirm("Reset device?")){
+
+            const res = await fetch(
+                "/reset-device/" + key,
+                {
+                    method: "POST"
+                }
+            );
+
+            window.location.reload();
+        }
+    }
+
+
 
     function searchTable(){
         let input = document.getElementById("search").value.toLowerCase();
@@ -668,8 +726,7 @@ document.onscroll = resetTimer;
 
 
 
-    </script>
-
+    
     </body>
     </html>
     """
@@ -682,7 +739,7 @@ document.onscroll = resetTimer;
     conversion=conversion
 )
 # 🧩 DELETE LICENSE (PASTE HERE 👇)
-@app.route("/delete/<key>")
+@app.route("/delete/<key>", methods=["POST"])
 def delete_license(key):
     if not verify_token(request):
         return "Unauthorized"
@@ -696,7 +753,7 @@ def delete_license(key):
     return "<script>window.location='/admin'</script>"
 
 # 🧩 RESET LICENSE (PASTE HERE 👇)
-@app.route("/reset-device/<key>")
+@app.route("/reset-device/<key>", methods=["POST"])
 def reset_device_admin(key):
     if not verify_token(request):
         return "Unauthorized"
@@ -717,18 +774,22 @@ def trial_users():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
 
-    c.execute("SELECT device, start_date, ip FROM trials")
+    c.execute(
+        "SELECT device, start_date, ip, pc_name FROM trials"
+    )
     rows = c.fetchall()
 
     today = datetime.date.today()
 
     data = []
-    for device, start_date, ip in rows:
+    for device, start_date, ip, pc_name in rows:
         start = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
         days_used = (today - start).days
         days_left = max(0, 30 - days_used)
 
-        data.append((device, ip, start_date, days_left))
+        data.append(
+            (device, ip, start_date, days_left, pc_name)
+        )
 
     conn.close()
 
@@ -756,7 +817,8 @@ def trial_users():
             <th>IP</th>
             <th>Start Date</th>
             <th>Days Left</th>
-            <th>Action</th>
+            <th>PC Name</th>
+            <th>Action</th>            
         </tr>
 
         {% for row in data %}
@@ -765,8 +827,9 @@ def trial_users():
     <td>{{row[1]}}</td>
     <td>{{row[2]}}</td>
     <td>{{row[3]}}</td>
+    <td>{{row[4]}}</td>
     <td>
-        <button onclick="if(confirm('Delete user?')) window.location='/delete-trial/{{row[0]}}'" 
+        <button onclick="deleteTrial('{{row[0]}}')" 
         style="background:#ef4444; border:none; padding:5px; border-radius:5px;">
         Delete
         </button>
@@ -777,13 +840,32 @@ def trial_users():
 
     <button onclick="window.location='/admin'">⬅ Back</button>
 
+    <script>
+
+    async function deleteTrial(device){
+
+        if(confirm("Delete user?")){
+
+            await fetch(
+                "/delete-trial/" + device,
+                {
+                    method: "POST"
+                }
+            );
+
+            window.location.reload();
+        }
+    }
+
+    </script>
+
     </body>
     </html>
     """
 
     return render_template_string(html, data=data)
 
-@app.route("/delete-trial/<device>")
+@app.route("/delete-trial/<device>", methods=["POST"])
 def delete_trial(device):
     if not verify_token(request):
         return "Unauthorized"
@@ -796,11 +878,81 @@ def delete_trial(device):
 
     return "<script>window.location='/trial-users'</script>"
 
+# EXPORT LICENSE
+@app.route("/export-licenses")
+def export_licenses():
+    if not verify_token(request):
+        return "Unauthorized"
+
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+
+    c.execute(
+        "SELECT key, expiry, device, email, pc_name FROM licenses"
+    )
+    rows = c.fetchall()
+    conn.close()
+
+    # 🔥 FIX: Use StringIO to safely build the CSV text
+    si = io.StringIO()
+    writer = csv.writer(si)
+    
+    writer.writerow([
+        "Key",
+        "Expiry",
+        "Device",
+        "Email",
+        "PC Name"
+    ])
+    writer.writerows(rows)
+
+    # Output the CSV data from the buffer to the response
+    response = make_response(si.getvalue())
+    response.headers["Content-Disposition"] = "attachment; filename=licenses.csv"
+    response.headers["Content-type"] = "text/csv"
+
+    return response
+
+# EXPORT TRIAL
+@app.route("/export-trials")
+def export_trials():
+    if not verify_token(request):
+        return "Unauthorized"
+
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+
+    c.execute(
+        "SELECT device, start_date, ip, pc_name FROM trials"
+    )
+    rows = c.fetchall()
+    conn.close()
+
+    # 🔥 FIX: Use StringIO to safely build the CSV text
+    si = io.StringIO()
+    writer = csv.writer(si)
+
+    writer.writerow([
+        "Device",
+        "Start Date",
+        "IP",
+        "PC Name"
+    ])
+    writer.writerows(rows)
+
+    # Output the CSV data from the buffer to the response
+    response = make_response(si.getvalue())
+    response.headers["Content-Disposition"] = "attachment; filename=trials.csv"
+    response.headers["Content-type"] = "text/csv"
+
+    return response
+
+
+# WEBHOOK
+@limiter.limit("20 per minute")
 @app.route("/webhook", methods=["POST"])
 def razorpay_webhook():
     print("🔥 Webhook triggered")
-    print("Headers:", dict(request.headers))
-    print("Body:", request.data)
     import hmac, hashlib
 
     webhook_secret = os.environ.get("RAZORPAY_WEBHOOK_SECRET")
